@@ -1,0 +1,87 @@
+logging:
+  version: 1
+
+  disable_existing_loggers: False
+
+  formatters:
+    simple:
+      format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+  handlers:
+    console:
+      class: logging.StreamHandler
+      level: INFO
+      formatter: simple
+      stream: ext://sys.stdout
+
+    info_file_handler:
+      class: logging.handlers.RotatingFileHandler
+      level: INFO
+      formatter: simple
+      filename: info.log
+      maxBytes: 10485760 # 10MB
+      backupCount: 20
+      encoding: utf8
+      delay: True
+
+    rich_handler:
+      class: src.cli.RichHandler
+      rich_tracebacks: True
+      tracebacks_show_locals: False
+
+  loggers:
+    src:
+      level: INFO
+
+    cli:
+      level: INFO
+
+  root:
+    handlers: [rich_handler, info_file_handler]
+
+
+hyperparameters:
+  learning_rate: 0.001
+  batch_size: 32
+  num_epochs: 100
+
+data:
+  rna_path: data/rna.h5ad
+  atac_path: data/atac.h5ad
+  held_out_cell_types: []
+  val_fraction: 0.1
+  seed: 0
+
+scvi:
+  n_latent: 30
+  max_epochs: 400
+  batch_key: batch
+
+peakvi:
+  n_latent: 30
+  max_epochs: 400
+  batch_key: batch
+
+diffusion:
+  n_timesteps: 1000
+  hidden_dim: 256
+  n_layers: 4
+  time_dim: 64
+  max_epochs: 200
+  learning_rate: 0.0001
+
+baseline:
+  mlp_hidden_dim: 256
+  mlp_max_epochs: 100
+  mlp_learning_rate: 0.001
+
+checkpoints:
+  output_dir: checkpoints
+  scvi_dir: checkpoints/scvi
+  peakvi_dir: checkpoints/peakvi
+  diffusion_path: checkpoints/diffusion.pt
+  mlp_baseline_path: checkpoints/mlp_baseline.pt
+  mean_baseline_path: checkpoints/mean_baseline.npy
+
+figures:
+  output_dir: figures
