@@ -26,6 +26,34 @@ class DataConfig(BaseModel):
     seed: int = 0
 
 
+class PeakFilterConfig(BaseModel):
+    reference_atac_path: str = "data/raw/atac_reference_atlas.h5ad"
+    output_path: str = "data/raw/atac_reference_atlas_filtered.h5ad"
+    cell_type_col: str = "cell_type"
+    min_cell_fraction: float = 0.05
+    batch_size: int = 50_000
+
+
+class PseudobulkConfig(BaseModel):
+    query_atac_path: str = "data/raw/atac.h5ad"
+    reference_atac_path: str = "data/raw/atac_reference_atlas.h5ad"
+    output_path: str = "data/processed/paired/atac.h5ad"
+    query_rna_path: str = "data/raw/rna.h5ad"
+    rna_output_path: str = "data/processed/paired/rna.h5ad"
+    cell_type_col: str = "cell_type"
+    embedding_key: str = "X_lsi_harmony"
+    k: int = 100
+    batch_size: int = 2000
+
+
+class TestSampleConfig(BaseModel):
+    output_rna_path: str = "data/raw/rna_sample.h5ad"
+    output_atac_path: str = "data/raw/atac_sample.h5ad"
+    total_budget: int = 10_000
+    min_per_type: int = 10
+    seed: int = 42
+
+
 class ScVIConfig(BaseModel):
     n_latent: int = 30
     max_epochs: int = 400

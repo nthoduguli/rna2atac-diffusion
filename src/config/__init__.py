@@ -16,8 +16,11 @@ from .models import (
     FiguresConfig,
     HyperparametersConfig,
     LoggingConfig,
+    PeakFilterConfig,
     PeakVIConfig,
+    PseudobulkConfig,
     ScVIConfig,
+    TestSampleConfig,
 )
 
 
@@ -64,6 +67,9 @@ class Config(BaseSettings):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     hyperparameters: HyperparametersConfig = Field(default_factory=HyperparametersConfig)
     data: DataConfig = Field(default_factory=DataConfig)
+    peak_filter: PeakFilterConfig = Field(default_factory=PeakFilterConfig)
+    pseudobulk: PseudobulkConfig = Field(default_factory=PseudobulkConfig)
+    sample: TestSampleConfig = Field(default_factory=TestSampleConfig)
     scvi: ScVIConfig = Field(default_factory=ScVIConfig)
     peakvi: PeakVIConfig = Field(default_factory=PeakVIConfig)
     diffusion: DiffusionConfig = Field(default_factory=DiffusionConfig)

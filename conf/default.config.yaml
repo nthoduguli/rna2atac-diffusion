@@ -46,11 +46,38 @@ hyperparameters:
   num_epochs: 100
 
 data:
-  rna_path: data/rna.h5ad
-  atac_path: data/atac.h5ad
-  held_out_cell_types: []
+  # rna_path, atac_path: cluster-specific, set via .env (see .env.example)
+  held_out_cell_types: [OPC]
   val_fraction: 0.1
   seed: 0
+
+peak_filter:
+  # reference_atac_path, output_path: cluster-specific, set via .env (see .env.example)
+  # 5% is scvi-tools' PeakVI tutorial's example threshold, not a universal constant --
+  # validate against this dataset's own accessibility distribution before trusting it.
+  # Computed per cell type (keep if any type clears the bar), not pooled across the
+  # population, so peaks specific to a rare cell type aren't diluted away -- see
+  # src/data/peak_filter.py's module docstring. Uses the 67-subtype scheme (finer than
+  # pseudobulk.cell_type_col's 7-class scheme) since it fully labels all 1,217,165
+  # reference cells, vs. only 231,183 for Class_Jan15_2024.
+  cell_type_col: ATAC.Subtype.Mar24_2024
+  min_cell_fraction: 0.05
+  batch_size: 50000
+
+pseudobulk:
+  # query_atac_path, reference_atac_path, output_path, query_rna_path, rna_output_path:
+  # cluster-specific, set via .env (see .env.example). reference_atac_path should point at
+  # peak_filter's output_path once that step has been run, not the raw unfiltered atlas.
+  cell_type_col: Class_Jan15_2024
+  embedding_key: X_lsi_harmony
+  k: 100
+  batch_size: 2000
+
+sample:
+  # output_rna_path, output_atac_path: cluster-specific, set via .env (see .env.example)
+  total_budget: 10000
+  min_per_type: 10
+  seed: 42
 
 scvi:
   n_latent: 30
@@ -75,13 +102,4 @@ baseline:
   mlp_max_epochs: 100
   mlp_learning_rate: 0.001
 
-checkpoints:
-  output_dir: checkpoints
-  scvi_dir: checkpoints/scvi
-  peakvi_dir: checkpoints/peakvi
-  diffusion_path: checkpoints/diffusion.pt
-  mlp_baseline_path: checkpoints/mlp_baseline.pt
-  mean_baseline_path: checkpoints/mean_baseline.npy
-
-figures:
-  output_dir: figures
+# checkpoints, figures: cluster-specific output dirs, set via .env (see .env.example)
