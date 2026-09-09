@@ -90,7 +90,10 @@ peakvi:
   batch_key: batch
 
 diffusion:
-  n_timesteps: 1000
+  # Reduced from 1000: a long ancestral-sampling chain gives per-step eps-prediction
+  # errors more room to compound multiplicatively (see ConditionalDDPM.sample's
+  # docstring) -- 100 is plenty for a ~30-dim latent target and keeps the chain short.
+  n_timesteps: 100
   hidden_dim: 256
   n_layers: 4
   time_dim: 64

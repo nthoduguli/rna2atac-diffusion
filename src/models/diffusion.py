@@ -67,6 +67,7 @@ class ConditionalDDPM(nn.Module):
         target_dim: int,
         cond_dim: int,
         n_timesteps: int = 1000,
+        x0_clip: float = 10.0,
         **denoiser_kwargs,
     ) -> None:
         super().__init__()
@@ -78,6 +79,11 @@ class ConditionalDDPM(nn.Module):
         alphas_cumprod = torch.cumprod(alphas, dim=0)
         self.register_buffer("betas", betas)
         self.register_buffer("alphas_cumprod", alphas_cumprod)
+        # Reparametrized-x0 clip magnitude used by `sample`, saved/loaded via the
+        # module's state_dict like the schedule buffers above. Overwritten by
+        # load_state_dict when loading a trained checkpoint, so the constructor
+        # default here only matters for a freshly-initialized model.
+        self.register_buffer("x0_clip", torch.tensor(x0_clip))
 
     @staticmethod
     def _cosine_beta_schedule(n_timesteps: int, s: float = 0.008) -> torch.Tensor:
@@ -104,21 +110,37 @@ class ConditionalDDPM(nn.Module):
 
     @torch.no_grad()
     def sample(self, cond: torch.Tensor, target_dim: int) -> torch.Tensor:
-        """Generate ATAC-representation embeddings via the standard DDPM ancestral sampler."""
+        """Generate ATAC-representation embeddings via the standard DDPM ancestral sampler.
+
+        Reparametrizes each step's noise prediction into a predicted x0 and clips it to
+        +/-`x0_clip` before computing the (analytic true-posterior) mean and variance for
+        the next step. Without this, small per-step errors in the eps-prediction compound
+        multiplicatively across the reverse chain -- with `n_timesteps` in the hundreds,
+        this let the sampler's output scale blow up by orders of magnitude relative to the
+        training data in practice (observed empirically: predicted values in the
+        hundreds/thousands against training targets in single digits).
+        """
         device = cond.device
         x = torch.randn(cond.shape[0], target_dim, device=device)
         for t in reversed(range(self.n_timesteps)):
             t_batch = torch.full((cond.shape[0],), t, device=device, dtype=torch.long)
+            alpha_bar_t = self.alphas_cumprod[t]
             beta_t = self.betas[t]
             alpha_t = 1.0 - beta_t
-            alpha_bar_t = self.alphas_cumprod[t]
 
             noise_pred = self.denoiser(x, t_batch, cond)
-            mean = (x - beta_t / (1 - alpha_bar_t).sqrt() * noise_pred) / alpha_t.sqrt()
+            x0_pred = (x - (1 - alpha_bar_t).sqrt() * noise_pred) / alpha_bar_t.sqrt()
+            x0_pred = x0_pred.clamp(-self.x0_clip, self.x0_clip)
 
             if t > 0:
+                alpha_bar_prev = self.alphas_cumprod[t - 1]
+                posterior_mean = (
+                    alpha_bar_prev.sqrt() * beta_t / (1 - alpha_bar_t) * x0_pred
+                    + alpha_t.sqrt() * (1 - alpha_bar_prev) / (1 - alpha_bar_t) * x
+                )
+                posterior_var = (1 - alpha_bar_prev) / (1 - alpha_bar_t) * beta_t
                 noise = torch.randn_like(x)
-                x = mean + beta_t.sqrt() * noise
+                x = posterior_mean + posterior_var.sqrt() * noise
             else:
-                x = mean
+                x = x0_pred
         return x

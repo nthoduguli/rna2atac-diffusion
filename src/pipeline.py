@@ -67,10 +67,15 @@ def train(config: Config) -> None:
     plot_loss_curve(mlp_losses, "MLP baseline training loss", figures_dir / "mlp_baseline_loss.png")
 
     logger.info("Training conditional diffusion model...")
+    # Clip the sampler's reparametrized x0 estimate to a few standard deviations of the
+    # real training target's scale, rather than a fixed constant -- keeps the bound
+    # meaningful regardless of the embedding dimensionality/scale in use.
+    x0_clip = float(target.std() * 5)
     diffusion = ConditionalDDPM(
         target_dim=target.shape[1],
         cond_dim=cond.shape[1],
         n_timesteps=config.diffusion.n_timesteps,
+        x0_clip=x0_clip,
         hidden_dim=config.diffusion.hidden_dim,
         n_layers=config.diffusion.n_layers,
         time_dim=config.diffusion.time_dim,

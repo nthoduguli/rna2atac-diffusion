@@ -67,7 +67,7 @@ class PeakVIConfig(BaseModel):
 
 
 class DiffusionConfig(BaseModel):
-    n_timesteps: int = 1000
+    n_timesteps: int = 100
     hidden_dim: int = 256
     n_layers: int = 4
     time_dim: int = 64

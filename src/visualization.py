@@ -10,15 +10,24 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.ticker import MaxNLocator
 
 
 def plot_loss_curve(losses: list[float], title: str, output_path: str | Path) -> None:
     """Plot a training loss curve and save it to `output_path`."""
+    epochs = range(1, len(losses) + 1)
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(losses)
+    ax.plot(epochs, losses, marker="o" if len(losses) <= 20 else None)
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
     ax.set_title(title)
+    if len(losses) <= 20:
+        # MaxNLocator(integer=True) doesn't reliably produce integer ticks when the
+        # autoscaled view range is under 1 unit wide (e.g. a single-epoch run), so
+        # pin ticks explicitly for short curves rather than relying on autoscaling.
+        ax.set_xticks(list(epochs))
+    else:
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True))
     fig.tight_layout()
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150)
