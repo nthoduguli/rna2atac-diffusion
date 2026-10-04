@@ -9,31 +9,84 @@ import numpy as np
 import torch
 
 from src.config import Config
-from src.data import load_paired_data, split_by_cell_type
+from src.data import PairedMultiomeData, load_paired_data, split_by_donor
 from src.metrics import evaluate_all
-from src.models import ConditionalDDPM, MeanBaseline, MLPBaseline, PeakVIEmbedder, ScVIEmbedder
-from src.visualization import plot_loss_curve, plot_metric_comparison, plot_pred_vs_true
+from src.models import CellTypeMeanBaseline, ConditionalDDPM, MLPBaseline, PeakVIEmbedder, ScVIEmbedder
+from src.visualization import plot_loss_curve, plot_metric_comparison, plot_pred_vs_true, plot_results_summary
 
 logger = logging.getLogger(__name__)
+
+
+def _seed_everything(seed: int) -> None:
+    import scvi
+
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    scvi.settings.seed = seed
+
+
+def _load_and_split(config: Config) -> tuple[PairedMultiomeData, dict[str, np.ndarray]]:
+    data = load_paired_data(config.data.rna_path, config.data.atac_path)
+    splits = split_by_donor(
+        data,
+        donor_col=config.data.donor_col,
+        held_out_cell_types=config.data.held_out_cell_types,
+        n_val_donors=config.data.n_val_donors,
+        n_test_donors=config.data.n_test_donors,
+        condition_col=config.data.condition_col,
+        seed=config.data.seed,
+    )
+    return data, splits
+
+
+def _check_batch_keys_cover_splits(config: Config, data: PairedMultiomeData, splits: dict[str, np.ndarray]) -> None:
+    """Fail fast if any eval split has a batch category that training never sees.
+
+    scVI/peakVI can't encode cells from an unseen batch category, so with a donor split a
+    per-donor batch key (e.g. a sequencing-library ID) would only fail at eval time,
+    after a full training run.
+    """
+    for adata, batch_key in ((data.rna, config.scvi.batch_key), (data.atac, config.peakvi.batch_key)):
+        if batch_key is None:
+            continue
+        values = adata.obs[batch_key].astype(str).to_numpy()
+        train_values = set(values[splits["train"]])
+        for name, idx in splits.items():
+            unseen = sorted(set(values[idx]) - train_values)
+            if unseen:
+                raise ValueError(  # noqa: TRY003
+                    f"batch_key {batch_key!r} has categories in split {name!r} that are absent from train "
+                    f"(e.g. {unseen[:3]}); use a batch key shared across donors, such as brain region."
+                )
+
+
+def _shuffle_within_cell_type(cond: np.ndarray, cell_types: np.ndarray, seed: int) -> np.ndarray:
+    """Give each cell the conditioning embedding of a random other cell of the same type.
+
+    Keeps cell-type identity in the conditioning but destroys any finer cell-state signal:
+    a model that really uses RNA state should lose its within-cell-type performance.
+    """
+    rng = np.random.default_rng(seed)
+    shuffled = cond.copy()
+    for cell_type in np.unique(cell_types):
+        idx = np.where(cell_types == cell_type)[0]
+        shuffled[idx] = cond[rng.permutation(idx)]
+    return shuffled
 
 
 def train(config: Config) -> None:
     """Train scVI, peakVI, the conditional diffusion model, and baselines.
 
     Steps:
-        1. Load paired snRNA-seq/snATAC-seq data and split by (held-out) cell type.
+        1. Load paired snRNA-seq/snATAC-seq data and split by donor (plus a held-out cell type).
         2. Fit scVI on snRNA-seq to obtain cell-state conditioning embeddings.
         3. Fit peakVI on snATAC-seq to obtain the continuous diffusion target embeddings.
-        4. Train the always-predict-the-mean and 2-layer-MLP baselines.
+        4. Train the cell-type-mean and 2-layer-MLP baselines.
         5. Train the conditional DDPM denoiser on (cond, target) embedding pairs.
     """
-    data = load_paired_data(config.data.rna_path, config.data.atac_path)
-    splits = split_by_cell_type(
-        data,
-        held_out_cell_types=config.data.held_out_cell_types,
-        val_fraction=config.data.val_fraction,
-        seed=config.data.seed,
-    )
+    _seed_everything(config.data.seed)
+    data, splits = _load_and_split(config)
+    _check_batch_keys_cover_splits(config, data, splits)
     train_idx = splits["train"]
 
     checkpoints = config.checkpoints
@@ -54,9 +107,9 @@ def train(config: Config) -> None:
     cond = scvi_embedder.embed(data.rna[train_idx])
     target = peakvi_embedder.embed(data.atac[train_idx])
 
-    logger.info("Fitting always-predict-the-mean baseline...")
-    mean_baseline = MeanBaseline().fit(cond, target)
-    np.save(checkpoints.mean_baseline_path, mean_baseline.mean_)
+    logger.info("Fitting cell-type-mean baseline...")
+    train_cell_types = data.rna.obs["cell_type"].to_numpy()[train_idx]
+    CellTypeMeanBaseline().fit(train_cell_types, target).save(checkpoints.mean_baseline_path)
 
     logger.info("Training 2-layer MLP baseline...")
     mlp = MLPBaseline(cond_dim=cond.shape[1], target_dim=target.shape[1], hidden_dim=config.baseline.mlp_hidden_dim)
@@ -139,6 +192,12 @@ def _train_diffusion(
 def evaluate(config: Config, split: str = "test") -> dict[str, dict[str, float]]:
     """Evaluate the diffusion model and baselines on the given split.
 
+    Besides each model, scores a shuffled-conditioning control for the MLP and diffusion
+    model (conditioning shuffled within cell type, see `_shuffle_within_cell_type`), and a
+    single-sample diffusion prediction alongside the default mean of
+    `config.diffusion.n_eval_samples` samples. Saves all predictions to
+    `<figures.output_dir>/predictions_<split>.npz`.
+
     Args:
         config: Pipeline configuration with paths to data and trained checkpoints.
         split: One of "val", "test", or "held_out".
@@ -146,13 +205,8 @@ def evaluate(config: Config, split: str = "test") -> dict[str, dict[str, float]]
     Returns:
         A dict mapping model name -> dict of metric name -> value.
     """
-    data = load_paired_data(config.data.rna_path, config.data.atac_path)
-    splits = split_by_cell_type(
-        data,
-        held_out_cell_types=config.data.held_out_cell_types,
-        val_fraction=config.data.val_fraction,
-        seed=config.data.seed,
-    )
+    _seed_everything(config.data.seed)
+    data, splits = _load_and_split(config)
     idx = splits[split]
     checkpoints = config.checkpoints
     figures_dir = Path(config.figures.output_dir)
@@ -163,21 +217,19 @@ def evaluate(config: Config, split: str = "test") -> dict[str, dict[str, float]]
 
     cond = scvi_embedder.embed()
     target = peakvi_embedder.embed()
-    cond_t = torch.as_tensor(cond, dtype=torch.float32)
+    obs = data.rna.obs.iloc[idx]
+    cell_types = obs["cell_type"].to_numpy().astype(str)
+    shuffled_cond = _shuffle_within_cell_type(cond, cell_types, seed=config.data.seed)
 
-    results: dict[str, dict[str, float]] = {}
-
-    mean_baseline = MeanBaseline()
-    mean_baseline.mean_ = np.load(checkpoints.mean_baseline_path)
-    mean_pred = mean_baseline.predict(cond)
-    results["mean_baseline"] = evaluate_all(mean_pred, target)
+    predictions: dict[str, np.ndarray] = {}
+    predictions["celltype_mean"] = CellTypeMeanBaseline.load(checkpoints.mean_baseline_path).predict(cell_types)
 
     mlp = MLPBaseline(cond_dim=cond.shape[1], target_dim=target.shape[1], hidden_dim=config.baseline.mlp_hidden_dim)
     mlp.load_state_dict(torch.load(checkpoints.mlp_baseline_path))
     mlp.eval()
     with torch.no_grad():
-        mlp_pred = mlp(cond_t).numpy()
-    results["mlp_baseline"] = evaluate_all(mlp_pred, target)
+        predictions["mlp"] = mlp(torch.as_tensor(cond, dtype=torch.float32)).numpy()
+        predictions["mlp_shuffled_cond"] = mlp(torch.as_tensor(shuffled_cond, dtype=torch.float32)).numpy()
 
     diffusion = ConditionalDDPM(
         target_dim=target.shape[1],
@@ -189,20 +241,97 @@ def evaluate(config: Config, split: str = "test") -> dict[str, dict[str, float]]
     )
     diffusion.load_state_dict(torch.load(checkpoints.diffusion_path))
     diffusion.eval()
-    diffusion_pred = diffusion.sample(cond_t, target_dim=target.shape[1]).numpy()
-    results["diffusion"] = evaluate_all(diffusion_pred, target)
 
+    def sample_mean(c: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        c_t = torch.as_tensor(c, dtype=torch.float32)
+        samples = np.stack([
+            diffusion.sample(c_t, target_dim=target.shape[1]).numpy() for _ in range(config.diffusion.n_eval_samples)
+        ])
+        return samples.mean(axis=0), samples[0]
+
+    predictions["diffusion"], predictions["diffusion_1sample"] = sample_mean(cond)
+    predictions["diffusion_shuffled_cond"], _ = sample_mean(shuffled_cond)
+
+    donors = obs[config.data.donor_col].to_numpy()
+    results = {name: evaluate_all(pred, target, cell_types, donors) for name, pred in predictions.items()}
     for name, metrics in results.items():
         logger.info("[%s] %s: %s", split, name, metrics)
 
-    predictions = {"mean_baseline": mean_pred, "mlp_baseline": mlp_pred, "diffusion": diffusion_pred}
-    for name, pred in predictions.items():
+    np.savez(
+        figures_dir / f"predictions_{split}.npz",
+        target=target,
+        cell_type=cell_types,
+        donor=donors,
+        **predictions,
+    )
+    for name in ("celltype_mean", "mlp", "diffusion"):
         plot_pred_vs_true(
-            pred, target, f"{name} ({split}): predicted vs. true", figures_dir / f"{name}_{split}_pred_vs_true.png"
+            predictions[name],
+            target,
+            f"{name} ({split}): predicted vs. true",
+            figures_dir / f"{name}_{split}_pred_vs_true.png",
         )
-    plot_metric_comparison(results, f"Model comparison ({split})", figures_dir / f"metric_comparison_{split}.png")
+    correlation_results = {
+        name: {metric: results[name][metric] for metric in ("pearson_r", "within_cell_type_r")} for name in results
+    }
+    plot_metric_comparison(
+        correlation_results, f"Model comparison ({split})", figures_dir / f"metric_comparison_{split}.png"
+    )
 
     return results
+
+
+# Rows and panels of the summary figure / table (see `summarize_results`).
+SUMMARY_ROWS = [
+    ("celltype_mean", "Cell-type mean", True),
+    ("mlp", "MLP", False),
+    ("diffusion", "Diffusion (mean of samples)", False),
+    ("diffusion_1sample", "Diffusion (1 sample)", False),
+    ("mlp_shuffled_cond", "MLP, shuffled RNA", True),
+    ("diffusion_shuffled_cond", "Diffusion, shuffled RNA", True),
+]
+SUMMARY_PANELS = [
+    ("pearson_r", "Per-cell r"),
+    ("within_cell_type_r", "Within cell type r"),
+    ("within_cell_type_donor_r", "Within cell type + donor r"),
+]
+
+
+def summarize_results(config: Config, split: str = "test") -> str:
+    """Rebuild the summary figure and a markdown results table from saved predictions.
+
+    Reads `<figures.output_dir>/predictions_<split>.npz` (written by `evaluate`), recomputes
+    metrics with the same `evaluate_all` used by `evaluate`, and writes
+    `results_<split>.png` and `results_<split>.md` next to it. Does not load any models.
+
+    Returns:
+        The markdown table.
+    """
+    figures_dir = Path(config.figures.output_dir)
+    with np.load(figures_dir / f"predictions_{split}.npz", allow_pickle=True) as saved:
+        target, cell_types, donors = saved["target"], saved["cell_type"], saved["donor"]
+        results = {
+            name: evaluate_all(saved[name], target, cell_types, donors) for name, _, _ in SUMMARY_ROWS if name in saved
+        }
+    rows = [row for row in SUMMARY_ROWS if row[0] in results]
+
+    n_donors = len(np.unique(donors))
+    plot_results_summary(
+        results,
+        rows,
+        SUMMARY_PANELS,
+        f"RNA \u2192 ATAC (peakVI latent), {split} split: {len(target):,} cells, {n_donors} donors",
+        figures_dir / f"results_{split}.png",
+    )
+
+    header = "| Model | " + " | ".join(title for _, title in SUMMARY_PANELS) + " | R\u00b2 |"
+    lines = [header, "|" + "---|" * (len(SUMMARY_PANELS) + 2)]
+    for name, label, _ in rows:
+        values = [results[name][metric] for metric, _ in SUMMARY_PANELS] + [results[name]["r2"]]
+        lines.append(f"| {label} | " + " | ".join(f"{0.0 if abs(v) < 0.005 else v:.2f}" for v in values) + " |")
+    table = "\n".join(lines) + "\n"
+    (figures_dir / f"results_{split}.md").write_text(table)
+    return table
 
 
 def run_inference(config: Config, rna_path: str | Path) -> np.ndarray:

@@ -36,6 +36,7 @@ def compute_knn_neighbors(
     cell_type_col: str,
     embedding_key: str = "X_lsi_harmony",
     k: int = 100,
+    donor_col: str | None = None,
 ) -> dict[str, np.ndarray]:
     """Find each query cell's k nearest same-cell-type neighbors in `reference`.
 
@@ -43,22 +44,31 @@ def compute_knn_neighbors(
     (present in both AnnData objects' `.obsm`), so a query cell only borrows
     accessibility from reference cells of the same type.
 
+    If `donor_col` is given (an `obs` column present in both files), neighbors are
+    further restricted to reference cells from the query cell's own donor. This is
+    required for donor-level train/test splits: the query cells are themselves part of
+    the reference atlas, so without it a test cell's pseudobulked target can include
+    the ATAC of training cells (and vice versa).
+
     Returns:
         Mapping from query cell barcode to an array of integer row indices into
         `reference`.
     """
+    group_cols = [cell_type_col] if donor_col is None else [cell_type_col, donor_col]
     neighbor_indices: dict[str, np.ndarray] = {}
-    reference_types = reference.obs[cell_type_col].to_numpy()
+    reference_groups = reference.obs[group_cols].to_numpy()
+    query_groups = query.obs[group_cols].to_numpy()
     reference_embedding = reference.obsm[embedding_key]
 
-    for cell_type in tqdm(query.obs[cell_type_col].unique(), desc="Building KNN per cell type"):
-        reference_mask = reference_types == cell_type
+    unique_groups = {tuple(group) for group in query_groups}
+    for group in tqdm(sorted(unique_groups, key=str), desc="Building KNN per group"):
+        reference_mask = (reference_groups == np.array(group, dtype=object)).all(axis=1)
         reference_indices = np.where(reference_mask)[0]
-        query_mask = (query.obs[cell_type_col] == cell_type).to_numpy()
+        query_mask = (query_groups == np.array(group, dtype=object)).all(axis=1)
         n_query_cells = int(query_mask.sum())
 
         if len(reference_indices) == 0:
-            logger.warning("No reference cells of type %r; dropping %d query cells.", cell_type, n_query_cells)
+            logger.warning("No reference cells in group %r; dropping %d query cells.", group, n_query_cells)
             continue
 
         query_embedding = query.obsm[embedding_key][query_mask]
@@ -106,6 +116,7 @@ def run_pseudobulking(
     embedding_key: str = "X_lsi_harmony",
     k: int = 100,
     batch_size: int = 2000,
+    donor_col: str | None = None,
 ) -> None:
     """Pseudobulk a paired-multiome ATAC AnnData via KNN smoothing against a reference atlas.
 
@@ -127,11 +138,13 @@ def run_pseudobulking(
         embedding_key: `obsm` key present in both files to search neighbors in.
         k: Number of neighbors to sum per query cell.
         batch_size: Number of query cells processed per streamed write.
+        donor_col: Optional `obs` column present in both files; if given, neighbors are
+            restricted to the query cell's own donor (see `compute_knn_neighbors`).
     """
     query = ad.read_h5ad(query_atac_path)
     reference = ad.read_h5ad(reference_atac_path, backed="r")
 
-    neighbor_indices = compute_knn_neighbors(query, reference, cell_type_col, embedding_key, k)
+    neighbor_indices = compute_knn_neighbors(query, reference, cell_type_col, embedding_key, k, donor_col=donor_col)
     query_order = [cell_id for cell_id in query.obs_names if cell_id in neighbor_indices]
     n_dropped = query.n_obs - len(query_order)
     if n_dropped > 0:

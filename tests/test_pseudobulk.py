@@ -55,6 +55,21 @@ def test_compute_knn_neighbors_same_cell_type(query_atac, reference_atac):
         assert (reference_types[indices] == query_type).all()
 
 
+def test_compute_knn_neighbors_same_donor(query_atac, reference_atac):
+    rng = np.random.default_rng(3)
+    reference_atac.obs["donor"] = rng.integers(0, 3, size=reference_atac.n_obs)
+    query_atac.obs["donor"] = rng.integers(0, 3, size=query_atac.n_obs)
+
+    neighbor_indices = compute_knn_neighbors(query_atac, reference_atac, "cell_type_label", k=3, donor_col="donor")
+
+    reference_types = reference_atac.obs["cell_type_label"].to_numpy()
+    reference_donors = reference_atac.obs["donor"].to_numpy()
+    assert set(neighbor_indices) == set(query_atac.obs_names)
+    for cell_id, indices in neighbor_indices.items():
+        assert (reference_types[indices] == query_atac.obs.loc[cell_id, "cell_type_label"]).all()
+        assert (reference_donors[indices] == query_atac.obs.loc[cell_id, "donor"]).all()
+
+
 def test_run_pseudobulking_roundtrip(tmp_path, query_atac, reference_atac):
     query_path = tmp_path / "query_atac.h5ad"
     reference_path = tmp_path / "reference_atac.h5ad"

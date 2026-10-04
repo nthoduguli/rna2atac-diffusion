@@ -48,7 +48,12 @@ hyperparameters:
 data:
   # rna_path, atac_path: cluster-specific, set via .env (see .env.example)
   held_out_cell_types: [OPC]
-  val_fraction: 0.1
+  # Train/val/test are split by donor (all of a donor's cells and brain regions go to one
+  # split), balanced across condition_col (AD vs. nonAD) -- see split_by_donor.
+  donor_col: projid
+  condition_col: AD2types
+  n_val_donors: 3
+  n_test_donors: 7
   seed: 0
 
 peak_filter:
@@ -70,7 +75,11 @@ pseudobulk:
   # peak_filter's output_path once that step has been run, not the raw unfiltered atlas.
   cell_type_col: Class_Jan15_2024
   embedding_key: X_lsi_harmony
-  k: 100
+  # Neighbors are restricted to the cell's own donor (the multiome cells are part of the
+  # reference atlas, so cross-donor neighbors would leak ATAC across donor splits). k is
+  # lowered from 100 so less within-cell-type variation is averaged away.
+  donor_col: projid
+  k: 25
   batch_size: 2000
 
 sample:
@@ -87,7 +96,10 @@ scvi:
 peakvi:
   n_latent: 30
   max_epochs: 400
-  batch_key: batch
+  # Brain region, matching scVI's `batch` on the RNA side. The ATAC file's own `batch` column
+  # is the sequencing library (one per donor x region), so under a donor split every test
+  # library would be a category peakVI never saw in training and can't encode.
+  batch_key: BrainRegion
 
 diffusion:
   # Reduced from 1000: a long ancestral-sampling chain gives per-step eps-prediction
@@ -99,6 +111,9 @@ diffusion:
   time_dim: 64
   max_epochs: 200
   learning_rate: 0.0001
+  # Point metrics score the mean of this many samples per cell (a single sample is
+  # penalized by its own sampling noise under MSE/Pearson).
+  n_eval_samples: 10
 
 baseline:
   mlp_hidden_dim: 256

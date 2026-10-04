@@ -1,4 +1,4 @@
-from src.data.dataset import PairedMultiomeData, load_paired_data, split_by_cell_type
+from src.data.dataset import PairedMultiomeData, load_paired_data, split_by_donor
 from src.data.peak_filter import compute_peak_prevalence_by_cell_type, filter_peaks_by_prevalence
 from src.data.pseudobulk import (
     compute_knn_neighbors,
@@ -14,7 +14,7 @@ __all__ = [
     "filter_peaks_by_prevalence",
     "load_paired_data",
     "run_pseudobulking",
-    "split_by_cell_type",
+    "split_by_donor",
     "standardize_rna_cell_type",
     "stratified_downsample_paired",
 ]

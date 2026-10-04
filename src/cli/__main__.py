@@ -58,6 +58,7 @@ def pseudobulk_cmd(
         embedding_key=pb.embedding_key,
         k=pb.k,
         batch_size=pb.batch_size,
+        donor_col=pb.donor_col,
     )
     typer.echo(f"Wrote pseudobulked ATAC to {pb.output_path}")
 
@@ -108,6 +109,18 @@ def eval_cmd(
     results = evaluate(config, split=split)
     for model_name, metrics in results.items():
         typer.echo(f"{model_name}: {metrics}")
+
+
+@cli.command("results")
+def results_cmd(
+    split: str = typer.Option("test", help="Split whose saved predictions to summarize."),
+    config_path: Path = typer.Option(None, "--config", help="Path to a YAML config file (overrides defaults)."),  # noqa: B008
+) -> None:
+    """Rebuild the results figure and markdown table from predictions saved by `eval`."""
+    from src.pipeline import summarize_results
+
+    config = load_config(config_path) if config_path is not None else conf
+    typer.echo(summarize_results(config, split=split))
 
 
 @cli.command("inference")

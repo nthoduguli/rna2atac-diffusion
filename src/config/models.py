@@ -22,7 +22,10 @@ class DataConfig(BaseModel):
     rna_path: str = "data/rna.h5ad"
     atac_path: str = "data/atac.h5ad"
     held_out_cell_types: list[str] = []
-    val_fraction: float = 0.1
+    donor_col: str = "donor"
+    condition_col: str | None = None
+    n_val_donors: int = 2
+    n_test_donors: int = 4
     seed: int = 0
 
 
@@ -44,6 +47,7 @@ class PseudobulkConfig(BaseModel):
     embedding_key: str = "X_lsi_harmony"
     k: int = 100
     batch_size: int = 2000
+    donor_col: str | None = None
 
 
 class TestSampleConfig(BaseModel):
@@ -73,6 +77,7 @@ class DiffusionConfig(BaseModel):
     time_dim: int = 64
     max_epochs: int = 200
     learning_rate: float = 1e-4
+    n_eval_samples: int = 10
 
 
 class BaselineConfig(BaseModel):
@@ -87,7 +92,7 @@ class CheckpointConfig(BaseModel):
     peakvi_dir: str = "checkpoints/peakvi"
     diffusion_path: str = "checkpoints/diffusion.pt"
     mlp_baseline_path: str = "checkpoints/mlp_baseline.pt"
-    mean_baseline_path: str = "checkpoints/mean_baseline.npy"
+    mean_baseline_path: str = "checkpoints/celltype_mean_baseline.npz"
 
 
 class FiguresConfig(BaseModel):

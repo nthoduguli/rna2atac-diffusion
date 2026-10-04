@@ -286,3 +286,5 @@ data/**
 # Generated checkpoints and figures
 checkpoints/
 figures/
+# ...except the README figure
+!docs/figures/

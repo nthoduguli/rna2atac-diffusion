@@ -2,25 +2,50 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import torch
 from torch import nn
 
 
-class MeanBaseline:
-    """Predicts the training-set mean ATAC representation regardless of input."""
+class CellTypeMeanBaseline:
+    """Predicts the training-set mean ATAC representation of each cell's type.
+
+    The strongest cheap baseline for RNA -> ATAC: cell identity explains most of the
+    signal, so a model has to beat this to show it uses cell state beyond cell type.
+    Cell types unseen in training (e.g. the held-out type) fall back to the global mean.
+    """
 
     def __init__(self) -> None:
-        self.mean_: np.ndarray | None = None
+        self.cell_types_: np.ndarray | None = None
+        self.means_: np.ndarray | None = None
+        self.global_mean_: np.ndarray | None = None
 
-    def fit(self, cond: np.ndarray, target: np.ndarray) -> MeanBaseline:
-        self.mean_ = target.mean(axis=0)
+    def fit(self, cell_types: np.ndarray, target: np.ndarray) -> CellTypeMeanBaseline:
+        self.cell_types_ = np.unique(cell_types).astype(str)
+        self.means_ = np.stack([target[cell_types == ct].mean(axis=0) for ct in self.cell_types_])
+        self.global_mean_ = target.mean(axis=0)
         return self
 
-    def predict(self, cond: np.ndarray) -> np.ndarray:
-        if self.mean_ is None:
-            raise RuntimeError("MeanBaseline.fit must be called before predict.")  # noqa: TRY003
-        return np.tile(self.mean_, (cond.shape[0], 1))
+    def predict(self, cell_types: np.ndarray) -> np.ndarray:
+        if self.means_ is None:
+            raise RuntimeError("CellTypeMeanBaseline.fit must be called before predict.")  # noqa: TRY003
+        lookup = dict(zip(self.cell_types_, self.means_, strict=True))
+        return np.stack([lookup.get(str(ct), self.global_mean_) for ct in cell_types])
+
+    def save(self, path: str | Path) -> None:
+        with open(path, "wb") as f:
+            np.savez(f, cell_types=self.cell_types_, means=self.means_, global_mean=self.global_mean_)
+
+    @classmethod
+    def load(cls, path: str | Path) -> CellTypeMeanBaseline:
+        baseline = cls()
+        with np.load(path) as saved:
+            baseline.cell_types_ = saved["cell_types"]
+            baseline.means_ = saved["means"]
+            baseline.global_mean_ = saved["global_mean"]
+        return baseline
 
 
 class MLPBaseline(nn.Module):
